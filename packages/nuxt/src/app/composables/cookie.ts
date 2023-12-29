@@ -8,6 +8,7 @@ import destr from 'destr'
 import { isEqual } from 'ohash'
 import { useNuxtApp } from '../nuxt'
 import { useRequestEvent } from './ssr'
+import { clearNuxtState, useState } from './state'
 
 type _CookieOptions = Omit<CookieSerializeOptions & CookieParseOptions, 'decode' | 'encode'>
 
@@ -29,7 +30,11 @@ const CookieDefaults: CookieOptions<any> = {
 
 export function useCookie<T = string | null | undefined> (name: string, _opts?: CookieOptions<T>): CookieRef<T> {
   const opts = { ...CookieDefaults, ..._opts }
-  const cookies = readRawCookies(opts) || {}
+  const cookiesServerState = useState<any>('nuxtApp:cookies')
+  const cookies = cookiesServerState.value || readRawCookies(opts) || {}
+  if (process.server) {
+    cookiesServerState.value ??= cookies
+  }
 
   const cookie = ref<T | undefined>(cookies[name] as any ?? opts.default?.())
 
@@ -63,9 +68,26 @@ export function useCookie<T = string | null | undefined> (name: string, _opts?: 
     }
   } else if (process.server) {
     const nuxtApp = useNuxtApp()
+
+    const callback = () => {
+      cookiesServerState.value[name] = cookie.value
+    }
+
+    if (opts.watch) {
+      watch(cookie, (newVal, oldVal) => {
+        if (isEqual(newVal, oldVal)) { return }
+        callback()
+      },
+      { deep: opts.watch !== 'shallow' })
+    } else {
+      callback()
+    }
+
     const writeFinalCookieValue = () => {
+      clearNuxtState('nuxtApp:cookies')
+      const cookies = readRawCookies(opts) || {}
       if (!isEqual(cookie.value, cookies[name])) {
-        writeServerCookie(useRequestEvent(nuxtApp), name, cookie.value, opts)
+        writeServerCookie(useRequestEvent(nuxtApp), name, cookie.value, opts as CookieSerializeOptions)
       }
     }
     const unhook = nuxtApp.hooks.hookOnce('app:rendered', writeFinalCookieValue)
